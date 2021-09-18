@@ -139,10 +139,10 @@ class User {
 
         const balanceNeeded = await Token.getMinBalanceRentForExemptAccount(this.provider.connection);
 
-        await this.program.rpc.createUser(this.userNonce, {
+        await this.program.rpc.createUser(_userNonce, {
             accounts: {
                 pool: poolPubkey,
-                user: this.userPubkey,
+                user: _userPubkey,
                 owner: this.provider.wallet.publicKey,
                 tokenProgram: TOKEN_PROGRAM_ID,
                 systemProgram: anchor.web3.SystemProgram.programId,
