@@ -6,21 +6,17 @@ use std::convert::Into;
 use std::convert::TryInto;
 
 #[cfg(not(feature = "local-testing"))]
-declare_id!("UNKNOWN" fail build );
+declare_id!("TeSTKchdpa2FKNV6gYNAENpququb3aT2r1pD41tZw36");
 #[cfg(feature = "local-testing")]
 declare_id!("TeSTKchdpa2FKNV6gYNAENpququb3aT2r1pD41tZw36");
 
 #[cfg(not(feature = "local-testing"))]
 mod constants {
-    pub const X_STEP_TOKEN_MINT_PUBKEY: &str = "xStpgUCss9piqeFUk2iLVcvJEGhAdJxJQuwLkXP555G";
-    pub const X_STEP_DEPOSIT_REQUIREMENT: u64 = 10_000_000_000_000;
     pub const MIN_DURATION: u64 = 86400;
 }
 
 #[cfg(feature = "local-testing")]
 mod constants {
-    pub const X_STEP_TOKEN_MINT_PUBKEY: &str = "tEsTL8G8drugWztoCKrPpEAXV21qEajfHg4q45KYs6s";
-    pub const X_STEP_DEPOSIT_REQUIREMENT: u64 = 10_000_000_000_000;
     pub const MIN_DURATION: u64 = 1;
 }
 
@@ -141,23 +137,11 @@ pub mod reward_pool {
             return Err(ErrorCode::DurationTooShort.into());
         }
 
-        //xstep lockup
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            token::Transfer {
-                from: ctx.accounts.x_token_depositor.to_account_info(),
-                to: ctx.accounts.x_token_pool_vault.to_account_info(),
-                authority: ctx.accounts.x_token_deposit_authority.to_account_info(),
-            },
-        );
-        token::transfer(cpi_ctx, constants::X_STEP_DEPOSIT_REQUIREMENT)?;
-
-        let pool = &mut ctx.accounts.pool;
+       let pool = &mut ctx.accounts.pool;
 
         pool.authority = ctx.accounts.authority.key();
         pool.nonce = pool_nonce;
         pool.paused = false;
-        pool.x_token_pool_vault = ctx.accounts.x_token_pool_vault.key();
         pool.staking_mint = ctx.accounts.staking_mint.key();
         pool.staking_vault = ctx.accounts.staking_vault.key();
         pool.reward_a_mint = ctx.accounts.reward_a_mint.key();
@@ -187,68 +171,6 @@ pub mod reward_pool {
         user.balance_staked = 0;
         user.nonce = nonce;
 
-        let pool = &mut ctx.accounts.pool;
-        pool.user_stake_count = pool.user_stake_count.checked_add(1).unwrap();
-
-        Ok(())
-    }
-
-    pub fn pause(ctx: Context<Pause>) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-        pool.paused = true;
-
-        //xstep refund
-        let seeds = &[
-            pool.to_account_info().key.as_ref(),
-            &[pool.nonce],
-        ];
-        let pool_signer = &[&seeds[..]];
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            token::Transfer {
-                from: ctx.accounts.x_token_pool_vault.to_account_info(),
-                to: ctx.accounts.x_token_receiver.to_account_info(),
-                authority: ctx.accounts.pool_signer.to_account_info(),
-            },
-            pool_signer,
-        );
-
-        token::transfer(cpi_ctx, ctx.accounts.x_token_pool_vault.amount)?;
-        
-        let cpi_ctx = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            token::CloseAccount {
-                account: ctx.accounts.x_token_pool_vault.to_account_info(),
-                destination: ctx.accounts.authority.to_account_info(),
-                authority: ctx.accounts.pool_signer.to_account_info(),
-            },
-            pool_signer,
-        );
-        token::close_account(cpi_ctx)?;
-        
-        pool.x_token_pool_vault = Pubkey::default();
-
-        Ok(())
-    }
-
-    pub fn unpause(ctx: Context<Unpause>) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-        pool.paused = false;
-
-        //the prior token vault was closed when pausing
-        pool.x_token_pool_vault = ctx.accounts.x_token_pool_vault.key();
-
-        //xstep lockup
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            token::Transfer {
-                from: ctx.accounts.x_token_depositor.to_account_info(),
-                to: ctx.accounts.x_token_pool_vault.to_account_info(),
-                authority: ctx.accounts.x_token_deposit_authority.to_account_info(),
-            },
-        );
-        token::transfer(cpi_ctx, 10_000_000_000_000)?;
-        
         Ok(())
     }
 
@@ -271,6 +193,10 @@ pub mod reward_pool {
             total_staked,
         )
         .unwrap();
+
+        if ctx.accounts.user.balance_staked.eq(&0) {
+            pool.user_stake_count = pool.user_stake_count.checked_add(1).unwrap();
+        }
         
         ctx.accounts.user.balance_staked = ctx.accounts.user.balance_staked.checked_add(amount).unwrap();
 
@@ -310,6 +236,7 @@ pub mod reward_pool {
         .unwrap();
         ctx.accounts.user.balance_staked = ctx.accounts.user.balance_staked.checked_sub(spt_amount).unwrap();
 
+
         // Transfer tokens from the pool vault to user vault.
         {
             let seeds = &[
@@ -328,6 +255,13 @@ pub mod reward_pool {
                 pool_signer,
             );
             token::transfer(cpi_ctx, spt_amount.try_into().unwrap())?;
+        }
+
+        {
+            let pool = &mut ctx.accounts.pool;
+            if ctx.accounts.user.balance_staked.eq(&0) {
+                pool.user_stake_count = pool.user_stake_count.checked_sub(1).unwrap();
+            }
         }
 
         Ok(())
@@ -502,156 +436,12 @@ pub mod reward_pool {
 
         Ok(())
     }
-
-    pub fn close_user(ctx: Context<CloseUser>) -> Result<()> {
-        let pool = &mut ctx.accounts.pool;
-        pool.user_stake_count = pool.user_stake_count.checked_sub(1).unwrap();
-        Ok(())
-    }
-
-    pub fn close_pool<'info>(ctx: Context<ClosePool>) -> Result<()> {
-        let pool = &ctx.accounts.pool;
-        
-        let signer_seeds = &[pool.to_account_info().key.as_ref(), &[ctx.accounts.pool.nonce]];
-        
-        //instead of closing these vaults, we could technically just 
-        //set_authority on them. it's not very ata clean, but it'd work
-        //if size of tx is an issue, thats an approach
-
-        //close staking vault
-        let ix = spl_token::instruction::transfer(
-            &spl_token::ID,
-            ctx.accounts.staking_vault.to_account_info().key,
-            ctx.accounts.staking_refundee.to_account_info().key,
-            ctx.accounts.pool_signer.key,
-            &[ctx.accounts.pool_signer.key],
-            ctx.accounts.staking_vault.amount,
-        )?;
-        solana_program::program::invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.staking_vault.to_account_info(),
-                ctx.accounts.staking_refundee.to_account_info(),
-                ctx.accounts.pool_signer.to_account_info(),
-            ],
-            &[signer_seeds],
-        )?;
-        let ix = spl_token::instruction::close_account(
-            &spl_token::ID,
-            ctx.accounts.staking_vault.to_account_info().key,
-            ctx.accounts.refundee.key,
-            ctx.accounts.pool_signer.key,
-            &[ctx.accounts.pool_signer.key],
-        )?;
-        solana_program::program::invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.staking_vault.to_account_info(),
-                ctx.accounts.refundee.to_account_info(),
-                ctx.accounts.pool_signer.to_account_info(),
-            ],
-            &[signer_seeds],
-        )?;
-        
-        //close token a vault
-        let ix = spl_token::instruction::transfer(
-            &spl_token::ID,
-            ctx.accounts.reward_a_vault.to_account_info().key,
-            ctx.accounts.reward_a_refundee.to_account_info().key,
-            ctx.accounts.pool_signer.key,
-            &[ctx.accounts.pool_signer.key],
-            ctx.accounts.reward_a_vault.amount,
-        )?;
-        solana_program::program::invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.reward_a_vault.to_account_info(),
-                ctx.accounts.reward_a_refundee.to_account_info(),
-                ctx.accounts.pool_signer.to_account_info(),
-            ],
-            &[signer_seeds],
-        )?;
-        let ix = spl_token::instruction::close_account(
-            &spl_token::ID,
-            ctx.accounts.reward_a_vault.to_account_info().key,
-            ctx.accounts.refundee.key,
-            ctx.accounts.pool_signer.key,
-            &[ctx.accounts.pool_signer.key],
-        )?;
-        solana_program::program::invoke_signed(
-            &ix,
-            &[
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.reward_a_vault.to_account_info(),
-                ctx.accounts.refundee.to_account_info(),
-                ctx.accounts.pool_signer.to_account_info(),
-            ],
-            &[signer_seeds],
-        )?;
-        
-        if pool.reward_a_vault != pool.reward_b_vault {
-            //close token b vault
-            let ix = spl_token::instruction::transfer(
-                &spl_token::ID,
-                ctx.accounts.reward_b_vault.to_account_info().key,
-                ctx.accounts.reward_b_refundee.to_account_info().key,
-                ctx.accounts.pool_signer.key,
-                &[ctx.accounts.pool_signer.key],
-                ctx.accounts.reward_b_vault.amount,
-            )?;
-            solana_program::program::invoke_signed(
-                &ix,
-                &[
-                    ctx.accounts.token_program.to_account_info(),
-                    ctx.accounts.reward_b_vault.to_account_info(),
-                    ctx.accounts.reward_b_refundee.to_account_info(),
-                    ctx.accounts.pool_signer.to_account_info(),
-                ],
-                &[signer_seeds],
-            )?;
-            let ix = spl_token::instruction::close_account(
-                &spl_token::ID,
-                ctx.accounts.reward_b_vault.to_account_info().key,
-                ctx.accounts.refundee.key,
-                ctx.accounts.pool_signer.key,
-                &[ctx.accounts.pool_signer.key],
-            )?;
-            solana_program::program::invoke_signed(
-                &ix,
-                &[
-                    ctx.accounts.token_program.to_account_info(),
-                    ctx.accounts.reward_b_vault.to_account_info(),
-                    ctx.accounts.refundee.to_account_info(),
-                    ctx.accounts.pool_signer.to_account_info(),
-                ],
-                &[signer_seeds],
-            )?;
-        }
-
-        Ok(())
-    }
 }
 
 #[derive(Accounts)]
 #[instruction(pool_nonce: u8)]
 pub struct InitializePool<'info> {
     authority: UncheckedAccount<'info>,
-
-    #[account(
-        mut,
-        constraint = x_token_pool_vault.mint == X_STEP_TOKEN_MINT_PUBKEY.parse::<Pubkey>().unwrap(),
-        constraint = x_token_pool_vault.owner == pool_signer.key(),
-    )]
-    x_token_pool_vault: Box<Account<'info, TokenAccount>>,
-    #[account(
-        mut,
-        constraint = x_token_depositor.mint == X_STEP_TOKEN_MINT_PUBKEY.parse::<Pubkey>().unwrap()
-    )]
-    x_token_depositor: Box<Account<'info, TokenAccount>>,
-    x_token_deposit_authority: Signer<'info>,
 
     staking_mint: Box<Account<'info, Mint>>,
     #[account(
@@ -701,7 +491,6 @@ pub struct InitializePool<'info> {
 pub struct CreateUser<'info> {
     // Stake instance.
     #[account(
-        mut,
         constraint = !pool.paused,
     )]
     pool: Box<Account<'info, Pool>>,
@@ -719,67 +508,6 @@ pub struct CreateUser<'info> {
     owner: Signer<'info>,
     // Misc.
     system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct Pause<'info> {
-    #[account(mut)]
-    x_token_pool_vault: Box<Account<'info, TokenAccount>>,
-    #[account(mut)]
-    x_token_receiver: Box<Account<'info, TokenAccount>>,
-
-    #[account(
-        mut, 
-        has_one = authority,
-        has_one = x_token_pool_vault,
-        constraint = !pool.paused,
-        constraint = pool.reward_duration_end < clock::Clock::get().unwrap().unix_timestamp.try_into().unwrap(),
-        //constraint = pool.reward_duration_end > 0,
-    )]
-    pool: Box<Account<'info, Pool>>,
-    authority: Signer<'info>,
-
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref()
-        ],
-        bump = pool.nonce,
-    )]
-    pool_signer: UncheckedAccount<'info>,
-    token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-pub struct Unpause<'info> {
-    #[account(
-        mut,
-        constraint = x_token_pool_vault.mint == X_STEP_TOKEN_MINT_PUBKEY.parse::<Pubkey>().unwrap(),
-        constraint = x_token_pool_vault.owner == pool_signer.key(),
-    )]
-    x_token_pool_vault: Box<Account<'info, TokenAccount>>,
-    #[account(
-        mut,
-        constraint = x_token_depositor.mint == X_STEP_TOKEN_MINT_PUBKEY.parse::<Pubkey>().unwrap()
-    )]
-    x_token_depositor: Box<Account<'info, TokenAccount>>,
-    x_token_deposit_authority: Signer<'info>,
-
-    #[account(
-        mut, 
-        has_one = authority,
-        constraint = pool.paused,
-    )]
-    pool: Box<Account<'info, Pool>>,
-    authority: Signer<'info>,
-
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref()
-        ],
-        bump = pool.nonce,
-    )]
-    pool_signer: UncheckedAccount<'info>,
-    token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
@@ -925,30 +653,6 @@ pub struct ClaimReward<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CloseUser<'info> {
-    #[account(
-        mut, 
-    )]
-    pool: Box<Account<'info, Pool>>,
-    #[account(
-        mut,
-        close = owner,
-        has_one = owner,
-        has_one = pool,
-        seeds = [
-            owner.to_account_info().key.as_ref(),
-            pool.to_account_info().key.as_ref()
-        ],
-        bump = user.nonce,
-        constraint = user.balance_staked == 0,
-        constraint = user.reward_a_per_token_pending == 0,
-        constraint = user.reward_b_per_token_pending == 0,
-    )]
-    user: Account<'info, User>,
-    owner: Signer<'info>,
-}
-
-#[derive(Accounts)]
 pub struct ClosePool<'info> {
     #[account(mut)]
     refundee: UncheckedAccount<'info>,
@@ -998,8 +702,6 @@ pub struct Pool {
     pub nonce: u8,
     /// Paused state of the program
     pub paused: bool,
-    /// The vault holding users' xSTEP
-    pub x_token_pool_vault: Pubkey,
     /// Mint of the token that can be staked.
     pub staking_mint: Pubkey,
     /// Vault to store staked tokens.

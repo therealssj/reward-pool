@@ -10,7 +10,10 @@ name = "reward_pool"
 
 [features]
 no-entrypoint = []
+no-idl = []
 cpi = ["no-entrypoint"]
+default = []
+debug = []
 
 #add to default for local testing
 #default = ["local-testing"]
